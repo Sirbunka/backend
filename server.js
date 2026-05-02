@@ -135,5 +135,25 @@ app.get("/", (_req, res) => {
   res.send("Bunker payments backend running");
 });
 
+app.get("/payment-status/:paymentId", async (req, res) => {
+  const { paymentId } = req.params;
+
+  const { data: deposit, error } = await supabase
+    .from("deposits")
+    .select("*")
+    .eq("nowpayments_payment_id", paymentId)
+    .single();
+
+  if (error || !deposit) {
+    return res.status(404).json({ error: "Payment not found" });
+  }
+
+  res.json({
+    status: deposit.status,
+    amount_usd: deposit.amount_usd,
+    payment_id: deposit.nowpayments_payment_id,
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
