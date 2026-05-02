@@ -19,16 +19,14 @@ const supabase = createClient(
 );
 
 function verifyNowPaymentsSignature(body, signature) {
+  if (!signature) return false;
+
   const sortedBody = JSON.stringify(body, Object.keys(body).sort());
 
-  const hmac = crypto.createHmac(
-    "sha512",
-    process.env.NOWPAYMENTS_IPN_SECRET
-  );
-
-  hmac.update(sortedBody);
-
-  const expectedSignature = hmac.digest("hex");
+  const expectedSignature = crypto
+    .createHmac("sha512", process.env.NOWPAYMENTS_IPN_SECRET)
+    .update(sortedBody)
+    .digest("hex");
 
   return expectedSignature === signature;
 }
@@ -82,12 +80,10 @@ app.post("/webhook", async (req, res) => {
     return res.status(401).json({ error: "Invalid signature" });
   }
 
-  const paymentId = String(req.body.payment_id);
+  const paymentId = String(req.body.payment_id || "");
   const paymentStatus = req.body.payment_status;
 
-  if (!paymentId) {
-    return res.sendStatus(200);
-  }
+  if (!paymentId) return res.sendStatus(200);
 
   const { data: deposit } = await supabase
     .from("deposits")
@@ -95,11 +91,7 @@ app.post("/webhook", async (req, res) => {
     .eq("nowpayments_payment_id", paymentId)
     .single();
 
-  if (!deposit) {
-    return res.sendStatus(200);
-  }
-
-  if (deposit.status === "completed") {
+  if (!deposit || deposit.status === "completed") {
     return res.sendStatus(200);
   }
 
@@ -108,31 +100,30 @@ app.post("/webhook", async (req, res) => {
     .update({ status: paymentStatus })
     .eq("id", deposit.id);
 
-  if (paymentStatus === "finished" || paymentStatus === "confirmed") {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("balance")
-      .eq("id", deposit.user_id)
-      .single();
-
-    await supabase
-      .from("profiles")
-      .update({
-        balance: Number(profile?.balance || 0) + Number(deposit.amount_usd),
-      })
-      .eq("id", deposit.user_id);
-
-    await supabase
-      .from("deposits")
-      .update({ status: "completed" })
-      .eq("id", deposit.id);
+  // Credit ONLY when NOWPayments says the payment is fully finished.
+  if (paymentStatus !== "finished") {
+    return res.sendStatus(200);
   }
 
-  res.sendStatus(200);
-});
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("balance")
+    .eq("id", deposit.user_id)
+    .single();
 
-app.get("/", (_req, res) => {
-  res.send("Bunker payments backend running");
+  await supabase
+    .from("profiles")
+    .update({
+      balance: Number(profile?.balance || 0) + Number(deposit.amount_usd),
+    })
+    .eq("id", deposit.user_id);
+
+  await supabase
+    .from("deposits")
+    .update({ status: "completed" })
+    .eq("id", deposit.id);
+
+  res.sendStatus(200);
 });
 
 app.get("/payment-status/:paymentId", async (req, res) => {
@@ -153,6 +144,10 @@ app.get("/payment-status/:paymentId", async (req, res) => {
     amount_usd: deposit.amount_usd,
     payment_id: deposit.nowpayments_payment_id,
   });
+});
+
+app.get("/", (_req, res) => {
+  res.send("Bunker payments backend running");
 });
 
 const PORT = process.env.PORT || 3000;
