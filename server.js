@@ -61,7 +61,9 @@ app.post("/create-payment", async (req, res) => {
       user_id: userId,
       amount_usd: Number(amount),
       crypto: "BTC",
+      pay_currency: "BTC",
       status: "pending",
+      credited: false,
       nowpayments_payment_id: String(response.data.payment_id),
     });
 
@@ -91,17 +93,35 @@ app.post("/webhook", async (req, res) => {
     .eq("nowpayments_payment_id", paymentId)
     .single();
 
-  if (!deposit || deposit.status === "completed") {
-    return res.sendStatus(200);
-  }
+  if (!deposit) return res.sendStatus(200);
 
   await supabase
     .from("deposits")
-    .update({ status: paymentStatus })
+    .update({
+      status: paymentStatus,
+      paid_amount: Number(req.body.price_amount || 0),
+      actually_paid: Number(req.body.actually_paid || 0),
+      pay_currency: req.body.pay_currency || "BTC",
+    })
     .eq("id", deposit.id);
 
-  // Credit ONLY when NOWPayments says the payment is fully finished.
+  if (deposit.credited === true || deposit.status === "completed") {
+    return res.sendStatus(200);
+  }
+
   if (paymentStatus !== "finished") {
+    return res.sendStatus(200);
+  }
+
+  const expectedUsd = Number(deposit.amount_usd);
+  const paidUsd = Number(req.body.price_amount || 0);
+
+  if (paidUsd < expectedUsd) {
+    await supabase
+      .from("deposits")
+      .update({ status: "underpaid" })
+      .eq("id", deposit.id);
+
     return res.sendStatus(200);
   }
 
@@ -111,16 +131,19 @@ app.post("/webhook", async (req, res) => {
     .eq("id", deposit.user_id)
     .single();
 
+  const newBalance = Number(profile?.balance || 0) + expectedUsd;
+
   await supabase
     .from("profiles")
-    .update({
-      balance: Number(profile?.balance || 0) + Number(deposit.amount_usd),
-    })
+    .update({ balance: newBalance })
     .eq("id", deposit.user_id);
 
   await supabase
     .from("deposits")
-    .update({ status: "completed" })
+    .update({
+      status: "completed",
+      credited: true,
+    })
     .eq("id", deposit.id);
 
   res.sendStatus(200);
@@ -142,6 +165,7 @@ app.get("/payment-status/:paymentId", async (req, res) => {
   res.json({
     status: deposit.status,
     amount_usd: deposit.amount_usd,
+    credited: deposit.credited,
     payment_id: deposit.nowpayments_payment_id,
   });
 });
